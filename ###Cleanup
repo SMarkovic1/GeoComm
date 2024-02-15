@@ -1,0 +1,153 @@
+import arcpy
+import math
+from tqdm.notebook import tqdm
+
+
+
+#Written by Stefan Markovic of GeoComm for purposes relating to the ############# project.
+#Please contact me if you need to apply it to a different project/situation, I would be more than happy to brainstorm with you.
+
+
+
+#Ive debated heavily with incorporating the buffering/setup aspect into the script, and have decided against it.
+#Having the specialist able to spatially view the values will prevent future errors and wasted time.
+    #Before running the script, the specialist should do the following steps:
+        #1. Select the attributes of the roads they want buffered (From ###)
+        #2. Buffer by 100 meters, or whatever metric.
+        #3. Perform an erase on the ### layer with the buffer. This will leave you with an empty space.
+        #4. On the county roads, perform a spatial selection on all roads that intersect the buffer, export this selection to a new feature class
+        #5. Verify field mapping for required fields match. This will then be used on the final reconnection
+        #6. Play around with the measuring tool to find good distances for both the road snapping and road erasure. These are entered in meters.
+        #7. Ensure that you have reprojected the two feature classes into the same projection. Otherwise, snapping will not occur.
+        #8. Run the script using your ### erase as the ### input, and your Selected county lines as the other input
+
+
+
+
+#this statement is hardcoded for now. Will need to be edited by specialist each time to ensure the correct append works.
+#Note for this section, I had to change some fields to match to reconcile field differences For example, oneWay_1 becomes
+# oneWay.
+SQL_Stmnt = """
+INSERT INTO ###_RCL_Erase_1 (
+    Shape, srcUnqID, srcFullNam, addRngPreL, addRngPreR, fromAddL, toAddL, 
+    fromAddR, toAddR, rngType, parityL, parityR, preMod, preDir, preType, 
+    preTypeSep, strName, postType, postDir, postMod, lgcyPreDir, lgcyName, 
+    lgcyType, lgcyPstDir, esnL, esnR, msagCommL, msagCommR, incMuniL, 
+    incMuniR, unincCommL, unincCommR, zipCodeL, zipCodeR, postCommL, 
+    postCommR, roadClass, oneWay, speedLimit, fcc, fZlevel, tZlevel, 
+    Alias1, Alias2, Alias3, Alias0, Alias4
+    )
+SELECT 
+    Shape, srcUnqID, srcFullNam, addRngPreL, addRngPreR, fromAddL, toAddL, 
+    fromAddR, toAddR, rngType, parityL, parityR, preMod, preDir, preType, 
+    preTypeSep, strName, postType, postDir, postMod, lgcyPreDir, lgcyName, 
+    lgcyType, lgcyPstDir, esnL, esnR, msagCommL, msagCommR, incMuniL, 
+    incMuniR, unincCommL, unincCommR, zipCodeL, zipCodeR, postCommL, 
+    postCommR, roadClass, oneWay, speedLimit, fcc, fZlevel, tZlevel, 
+    Alias1, Alias2, Alias3, Alias0, Alias4
+FROM Deschutes_RCL_IN_SpatialJoin_4
+"""
+
+# The feature classes
+county_lines = arcpy.GetParameterAsText(0)#r'C:\Users\Stefan\Documents\ArcGIS\Projects\MyProject66\MyProject66.gdb\Deschs_Project'
+state_lines = arcpy.GetParameterAsText(1)#r'C:\Users\Stefan\Documents\ArcGIS\Projects\MyProject66\MyProject66.gdb\###_Erased_small'
+acceptable_distance_threshold = arcpy.GetParameterAsText(2)  # Define the maximum distance to snap
+buffer_distance = arcpy.GetParameterAsText(3) # in meters
+
+if arcpy.Exists("state_lines_layer"):
+    arcpy.Delete_management("state_lines_layer")
+
+# Function to calculate the distance between two points
+def distance(point1, point2):
+    return math.sqrt((point1.X - point2.X)**2 + (point1.Y - point2.Y)**2)
+
+# Gather all endpoints of state lines
+state_endpoints = []
+with arcpy.da.SearchCursor(state_lines, ['SHAPE@']) as cursor:
+    for row in cursor:
+        polyline = row[0]
+        for part in polyline:
+            if part.count > 0:  # Check if there are vertices in the part
+                state_endpoints.append(part[0])  # Start point of state line
+                state_endpoints.append(part[-1])  # End point of state line
+
+# Use an update cursor to iterate through the county lines
+with arcpy.da.UpdateCursor(county_lines, ['SHAPE@']) as cursor:
+    for row in cursor:
+        county_line = row[0]
+        vertices = [pt for pt in county_line.getPart(0)]
+        
+        # Find the nearest state endpoint to the county line's start and end points
+        start_point = vertices[0]
+        end_point = vertices[-1]
+        nearest_start_distance = float('inf')
+        nearest_end_distance = float('inf')
+        nearest_start_endpoint = None
+        nearest_end_endpoint = None
+
+        for endpoint in state_endpoints:
+            start_dist = distance(start_point, endpoint)
+            end_dist = distance(end_point, endpoint)
+
+            if start_dist < nearest_start_distance:
+                nearest_start_distance = start_dist
+                nearest_start_endpoint = endpoint
+            
+            if end_dist < nearest_end_distance:
+                nearest_end_distance = end_dist
+                nearest_end_endpoint = endpoint
+
+        # Snap start point or end point if within acceptable distance
+        if nearest_start_distance <= acceptable_distance_threshold:
+            vertices[0] = nearest_start_endpoint  # Snap start point
+        if nearest_end_distance <= acceptable_distance_threshold:
+            vertices[-1] = nearest_end_endpoint  # Snap end point
+
+        # Create a new polyline from the modified vertices
+        new_line = arcpy.Polyline(arcpy.Array(vertices), county_line.spatialReference)
+        
+        # Update the row with the new geometry
+        row[0] = new_line
+        
+        cursor.updateRow(row)
+
+# Create a feature layer from the state lines feature class for selection and deletion
+state_lines_layer = "state_lines_layer"
+arcpy.MakeFeatureLayer_management(state_lines, state_lines_layer)
+
+# Use a SearchCursor to buffer the county lines and select intersecting state lines
+state_lines_to_delete = []
+
+
+with arcpy.da.SearchCursor(county_lines, ['SHAPE@']) as county_cursor:
+    for county_row in county_cursor:
+        county_buffer = county_row[0].buffer(buffer_distance)
+
+        # Select state lines that intersect with this buffer
+        arcpy.SelectLayerByLocation_management(state_lines_layer, "INTERSECT", county_buffer)
+
+        # Use a SearchCursor to go through the selected state lines and store their ObjectIDs
+        with arcpy.da.SearchCursor(state_lines_layer, ['SHAPE@', 'OID@']) as state_cursor:
+            for state_row in state_cursor:
+                state_line = state_row[0]
+                intersection = county_buffer.intersect(state_line, 2)  # 2 returns the geometry type 'polyline'
+                intersection_length = float(intersection.length)
+                state_line_length = float(state_line.length)
+
+                # Check if the intersection length is greater than the threshold percentage of the state line's length
+                if state_line_length > 0 and (intersection_length / state_line_length) >= threshold:
+                    state_lines_to_delete.append(state_row[1])  # Store the ObjectID
+
+        # Clear the selection on the state lines layer
+        arcpy.SelectLayerByAttribute_management(state_lines_layer, "CLEAR_SELECTION")
+
+# Now, delete the state lines that meet the criteria
+with arcpy.da.UpdateCursor(state_lines_layer, ['OID@']) as del_cursor:
+    for del_row in del_cursor:
+        if del_row[0] in state_lines_to_delete:
+            del_cursor.deleteRow()
+
+# Clear the selection on the state lines layer one last time for good measure
+arcpy.SelectLayerByAttribute_management(state_lines_layer, "CLEAR_SELECTION")
+
+#arcpy.management.Append(county_final, ____final, "NO_TEST", '','' , SQL_Stmnt,'' ,'') this statement will stay commented out
