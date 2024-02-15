@@ -1,0 +1,84 @@
+import arcpy
+import os
+db = r"############################"
+
+arcpy.env.workspace = db
+
+stormDb = r"W:\StormDB\Storm.gdb"
+
+stormPoint = stormDb + '//' + "StormPoint"
+stormLine = stormDb + '//' + "StormLine"
+stormPolygon = stormDb + '//' + "StormPolygon"
+
+
+fcDict = {"StormPoint":"POINT", "StormLine": "POLYLINE", "StormPolygon": "POLYGON"}
+datasets = arcpy.ListDatasets(feature_type='feature')
+datasets = [''] + datasets if datasets is not None else []
+for item in fcDict:
+    print(item)
+    itemPath = stormDb + "\\" + item
+    if arcpy.Exists(itemPath):
+        geomtype = fcDict[item]
+        arcpy.Delete_management(itemPath)
+        newFc = arcpy.management.CreateFeatureclass(stormDb, item, geomtype)
+        arcpy.management.AddField(newFc, 'comp_class', 'TEXT', '', '', '30')
+
+Dict = {}
+exclusionList = ['OBJECTID', 'Shape', 'Shape_Length', 'Shape_Area', 'SHAPE', 'SHAPE_Length', 'SHAPE_Area']
+for ds in datasets:
+    for fc in arcpy.ListFeatureClasses(feature_dataset=ds):
+        path = os.path.join(arcpy.env.workspace, ds, fc)
+        featureClass = path
+        desc = arcpy.Describe(featureClass)
+        geometryType = desc.shapeType
+        fieldNames = arcpy.ListFields(featureClass)
+        for field in fieldNames:
+            if geometryType not in Dict.keys():
+                Dict[geometryType] = {}
+            if field.name not in Dict[geometryType].keys():
+                Dict[geometryType][field.name] = {}
+                Dict[geometryType][field.name]["dataType"] = field.type
+                Dict[geometryType][field.name]["dataLength"] = field.length
+                Dict[geometryType][field.name]["shapeType"] = geometryType
+
+#arcgis add field 1 pt feature class, 1 line feature class, 1 polygon feature class. for every
+#field that is not in an exclusion list, add it to feature class 
+#using name length data type, extract from dict, and pass into addfield
+for geometry in Dict:
+    for field in Dict[geometry]:
+        dType = Dict[geometry][field]["dataType"]
+        dLength = Dict[geometry][field]["dataLength"]
+        sType = Dict[geometry][field]["shapeType"]
+        if field not in exclusionList:
+            if sType == "Point":
+                arcpy.management.AddField(stormPoint, field, dType, dLength)
+            if sType == "Polyline":
+                arcpy.management.AddField(stormLine, field, dType, dLength)
+            if sType == "Polygon":
+                arcpy.management.AddField(stormPolygon, field, dType, dLength)
+print(Dict)
+for ds in datasets:
+    for fc in arcpy.ListFeatureClasses(feature_dataset=ds):
+        path = os.path.join(arcpy.env.workspace, ds, fc)
+        featureClass = path
+        desc = arcpy.Describe(featureClass) 
+        geometryType = desc.shapeType
+        target = ""
+        if geometryType == "Point":
+            target = stormPoint
+        elif geometryType == "Polyline":
+            target = stormLine
+        elif geometryType == "Polygon":
+            target = stormPolygon
+        else:
+            print(geometryType + featureClass)
+        try:
+            arcpy.management.AddField(featureClass, 'comp_class', 'TEXT', '', '', '30')
+        except:
+            pass
+        replaced = fc.replace('sw', '')
+        fcLower = replaced.lower()
+        arcpy.management.CalculateField(featureClass , 'comp_class', '"' + fcLower + '"')
+        arcpy.management.Append(featureClass, target, "NO_TEST")
+        
+
