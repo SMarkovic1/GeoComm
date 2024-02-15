@@ -1,0 +1,160 @@
+import arcpy
+import re
+
+arcpy.env.workspace = r'C:\Users\Stefan\Documents\ArcGIS\Projects\SSAP_to_RCL\SSAP_to_RCL.gdb'
+
+line_fc = 'Road_Centerline'
+point_fc = 'ad'
+
+
+buffer_distance = "200 meters"
+
+
+field_line = 'StBaseName'
+field_point = 'StBaseNm'
+
+
+fields_check = ['AddNum', 'abStPreDir', 'abStPosTyp']
+
+
+line_ids = [row[0] for row in arcpy.da.SearchCursor(line_fc, 'RoadCenterLine_ID')]
+
+
+def clean_filename(filename):
+
+    filename = filename.replace(' ', '_')
+
+    filename = re.sub('[/:*?"<>|]', '', filename)
+    
+
+    if filename[0].isdigit():
+        filename = 'FC_' + filename  
+
+    return filename
+for line_id in line_ids:
+    if line_id is None:
+        continue
+
+    print(f"Processing line_id: {line_id}")
+
+
+    temp_buffer_left = f"temp_buffer_left_{line_id}"
+    temp_buffer_right = f"temp_buffer_right_{line_id}"
+
+
+    point_fc_left = f"{line_id}_L"
+    point_fc_right = f"{line_id}_R"
+
+
+    if arcpy.Exists("line_layer"):
+        arcpy.Delete_management("line_layer")
+
+
+    arcpy.management.MakeFeatureLayer(line_fc, "line_layer", where_clause=f"RoadCenterLine_ID = {line_id}")
+
+
+    arcpy.analysis.Buffer(
+        "line_layer",
+        temp_buffer_left,
+        buffer_distance,
+        line_side="LEFT",
+        line_end_type="FLAT",
+        dissolve_option="NONE"
+    )
+
+
+    arcpy.analysis.Buffer(
+        "line_layer",
+        temp_buffer_right,
+        buffer_distance,
+        line_side="RIGHT",
+        line_end_type="FLAT",
+        dissolve_option="NONE"
+    )
+
+
+    arcpy.management.Delete("line_layer")
+
+
+    if arcpy.Exists("point_layer"):
+        arcpy.Delete_management("point_layer")
+
+
+    arcpy.management.MakeFeatureLayer(point_fc, "point_layer")
+
+
+    with arcpy.da.SearchCursor(line_fc, [field_line], where_clause=f"RoadCenterLine_ID = {line_id}") as cursor:
+        for row in cursor:
+            line_attribute = row[0]
+
+
+    for buffer, suffix in [(temp_buffer_left, '_L'), (temp_buffer_right, '_R')]:
+        arcpy.management.SelectLayerByLocation(
+            "point_layer",
+            "INTERSECT",
+            buffer,
+            selection_type="NEW_SELECTION"
+        )
+
+        where_clause = f"{field_point} = '{line_attribute}'"
+
+        arcpy.management.SelectLayerByAttribute(
+            "point_layer",
+            "SUBSET_SELECTION",
+            where_clause
+        )
+
+        count = int(arcpy.management.GetCount("point_layer")[0])
+        if count > 0:
+            output_fc = clean_filename(f"{line_attribute}{suffix}")
+            print(f"Attempting to create feature class with name: {output_fc}")
+            if arcpy.Exists(output_fc):
+                arcpy.Delete_management(output_fc)
+            arcpy.management.CopyFeatures("point_layer", output_fc)
+
+            if suffix == '_L':
+                point_fc_left = output_fc
+            elif suffix == '_R':
+                point_fc_right = output_fc
+
+        arcpy.management.Delete(buffer)
+
+    fields_update = ['FrAdd_L', 'ToAdd_L', 'FrAdd_R', 'ToAdd_R', 'Parity_L', 'Parity_R', 'abStPreDir', 'abStPosTyp']
+
+    addresses_left, addresses_right = [], []
+    if arcpy.Exists(point_fc_left):
+        addresses_left = [row[0] for row in arcpy.da.SearchCursor(point_fc_left, fields_check)]
+
+    if arcpy.Exists(point_fc_right):
+        addresses_right = [row[0] for row in arcpy.da.SearchCursor(point_fc_right, fields_check)]
+
+    odd_left = sum(int(address) % 2 for address in addresses_left) if addresses_left else 0
+    odd_right = sum(int(address) % 2 for address in addresses_right) if addresses_right else 0
+
+    parity_left = 'O' if odd_left > len(addresses_left) / 2 else 'E'
+    parity_right = 'O' if odd_right > len(addresses_right) / 2 else 'E'
+
+    # Update the attributes of the line with the given line_id
+    with arcpy.da.UpdateCursor(line_fc, fields_update, where_clause=f"RoadCenterLine_ID = {line_id}") as cursor:
+        for row in cursor:
+            if ((parity_right == 'O' and row[5] == 'E' and addresses_right) or 
+                (parity_left == 'O' and row[4] == 'E' and addresses_left)):
+                # Flip the 'FrAdd_L', 'ToAdd_L', 'FrAdd_R', 'ToAdd_R' fields
+                print('RCL does not match address points. flipping attributes.')
+                row[0], row[2] = row[2], row[0]
+                row[1], row[3] = row[3], row[1]
+                # Flip the 'Parity_L' and 'Parity_R' fields
+                row[4], row[5] = row[5], row[4]
+            else:
+                if addresses_left:
+                    row[4] = parity_left
+                if addresses_right:
+                    row[5] = parity_right
+            cursor.updateRow(row)
+
+    arcpy.management.Delete("point_layer")
+    if arcpy.Exists(point_fc_left):
+        arcpy.Delete_management(point_fc_left)
+
+    if arcpy.Exists(point_fc_right):
+        arcpy.Delete_management(point_fc_right)
