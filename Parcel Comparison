@@ -1,0 +1,43 @@
+import arcpy
+
+# Set workspace (adjust path as necessary)
+arcpy.env.workspace = r"C:\Users\Stefan\Documents\ArcGIS\Projects\REMOVED.gdb"
+
+# Path to the point and polygon feature classes
+points_fc = "####"
+parcels_fc = "Parcels"
+
+# Create an in-memory copy of the points feature class to avoid altering the original data directly
+points_copy = arcpy.management.CopyFeatures(points_fc, "in_memory/points_copy")
+
+# Create a search cursor for the Parcels feature class to loop through each polygon
+with arcpy.da.SearchCursor(parcels_fc, ["SHAPE@", "SitusAddNumber", "SitusAddName"]) as parcels_cursor:
+    # Create an update cursor for the points_copy feature class to update point locations
+    with arcpy.da.UpdateCursor(points_copy, ["SHAPE@", "Source_Full_Addr"]) as points_cursor:
+        for point in points_cursor:
+            point_address = point[1]  # Source_Full_Addr field value
+            
+            # Reset the parcels cursor for each point to go through all parcels again
+            parcels_cursor.reset()
+            for parcel in parcels_cursor:
+                # Handle None values for SitusAddNumber and SitusAddName
+                situsAddNumber = str(parcel[1]) if parcel[1] is not None else ""
+                situsAddName = parcel[2] if parcel[2] is not None else ""
+                
+                # Concatenate SitusAddNumber and SitusAddName to form the full address
+                parcel_address = situsAddNumber + " " + situsAddName
+                
+                # Check if the point's address matches the parcel's address
+                if point_address.lower().strip() == parcel_address.lower().strip():
+                    # Calculate the center of the parcel polygon
+                    center = parcel[0].centroid
+                    
+                    # Update the point's location to the center of the parcel
+                    point[0] = arcpy.PointGeometry(center)
+                    points_cursor.updateRow(point)
+                    break  # Move to the next point after finding a match
+
+# Optionally, save the updated points back to a new feature class or overwrite the original
+arcpy.management.CopyFeatures(points_copy, "####")
+
+print("Processing complete.")
