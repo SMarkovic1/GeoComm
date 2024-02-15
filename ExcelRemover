@@ -1,0 +1,25 @@
+import pandas as pd
+import openpyxl
+import time
+
+file_name = r"C:\Users\Stefan\Documents\scripttestremover1.xlsx"  #change this to the excel path, make sure you leave the 'r'
+
+with pd.ExcelFile(file_name) as xl:
+    df = xl.parse(xl.sheet_names[0])  # this is the sheet number of the rows to be removed, aka ur main MSAG sheet.
+
+    # Filter out the rows with 'R' in the 'Removed' column
+    removed_rows_df = df[df['Gc_Rem'] == 'R']
+
+    # Remove the rows with 'R' from the original dataframe
+    df = df[df['Gc_Rem'] != 'R']
+
+    # If 'Removed' sheet exists, append to it, otherwise create a new one
+    if 'Remover' in xl.sheet_names:
+        removed_existing_df = xl.parse('Remover')
+        removed_rows_df = pd.concat([removed_existing_df, removed_rows_df], ignore_index=True)
+
+time.sleep(2) #this is just here to make sure the process is finished before it saves and closes
+
+with pd.ExcelWriter(file_name, engine='openpyxl') as writer:
+    df.to_excel(writer, sheet_name=xl.sheet_names[0], index=False)  # overwrite the original sheet
+    removed_rows_df.to_excel(writer, sheet_name='Remover', index=False)  # create or overwrite the Removed sheet
